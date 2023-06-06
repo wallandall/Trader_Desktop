@@ -1,5 +1,5 @@
 import requests
-import logger
+import logging
 
 
 class BinanceFuturesClient:
@@ -9,7 +9,9 @@ class BinanceFuturesClient:
         else:
             self.base_url = "https://fapi.binance.com"
 
-        logger.info("Binance Futures Client succesfully initialised")
+        self.prices = dict()
+
+        logging.info("Binance Futures Client succesfully initialised")
 
     def make_requests(self, method, endpoint, data):
         if method == "GET":
@@ -20,7 +22,7 @@ class BinanceFuturesClient:
         if response.status_code == 200:
             return response.json()
         else:
-            logger.error(
+            logging.error(
                 "Error while making %s request to %s: %s (error code %s)",
                 method,
                 endpoint,
@@ -30,7 +32,7 @@ class BinanceFuturesClient:
             return None
 
     def get_contracts(self):
-        exchange_info = self.make_request("GET", "/fapi/v1/exchangeInfo", None)
+        exchange_info = self.make_requests("GET", "/fapi/v1/exchangeInfo", None)
         contracts = dict()
 
         if exchange_info is not None:
@@ -44,7 +46,7 @@ class BinanceFuturesClient:
         data["interval"] = interval
         data["limit"] = 1000
 
-        raw_candles = self.make_requests("GET", "fapi/v1/klines", data)
+        raw_candles = self.make_requests("GET", "/fapi/v1/klines", data)
         candles = []
 
         if raw_candles is not None:
@@ -64,7 +66,7 @@ class BinanceFuturesClient:
 
     def get_bid_ask(self, symbol):
         data = dict()
-        data[symbol] = symbol
+        data['symbol'] = symbol
         ob_data = self.make_requests("GET", "/fapi/v1/ticker/bookTicker", data)
 
         if ob_data is not None:
