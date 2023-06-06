@@ -2,6 +2,7 @@ import tkinter as tk
 import logging
 from dotenv import dotenv_values
 from connectors.binance import BinanceFuturesClient
+from interface.root_component import Root
 
 
 config = dotenv_values(".env")
@@ -30,8 +31,6 @@ logger.addHandler(file_handler)
 if __name__ == '__main__':
     binance = BinanceFuturesClient(KEY, SECRET, True)
    
-    root = tk.Tk()
-    
-
+    root = Root()
     root.mainloop()
 
