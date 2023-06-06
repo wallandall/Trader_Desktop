@@ -1,38 +1,73 @@
-import requests
 import logging
+import requests
+import time
+
+from urllib.parse import urlencode
+import websocket
+import json
+import hmac
+import hashlib
+import threading
+
+logger = logging.getLogger()
 
 
 class BinanceFuturesClient:
-    def __init__(self, testnet):
+    def __init__(self, api_key, api_secret, testnet):
         if testnet:
             self.base_url = "https://testnet.binancefuture.com"
+            self.wss_url = "wss://stream.binancefuture.com/ws"
         else:
             self.base_url = "https://fapi.binance.com"
+            self.wss_url = "wss://fstream.binance.com/ws"
 
+        self.api_key = api_key
+        self.api_secret = api_secret
         self.prices = dict()
+        self.headers = {"X-MBX-APIKEY": self.api_key}
 
-        logging.info("Binance Futures Client succesfully initialised")
+        self.id = 1
+        self.ws = None
+        t = threading.Thread(target=self.start_ws)
+        t.start()
 
-    def make_requests(self, method, endpoint, data):
+        logger.info("Binance Futures Client successfully initialized")
+
+    def generate_signature(self, data):
+        return hmac.new(
+            self.api_secret.encode(), urlencode(data).encode(), hashlib.sha256
+        ).hexdigest()
+
+    def make_request(self, method, endpoint, data):
         if method == "GET":
-            response = requests.get(self.base_url + endpoint, params=data)
+            response = requests.get(
+                self.base_url + endpoint, params=data, headers=self.headers
+            )
+        elif method == "POST":
+            response = requests.post(
+                self.base_url + endpoint, params=data, headers=self.headers
+            )
+        elif method == "DELETE":
+            response = requests.delete(
+                self.base_url + endpoint, params=data, headers=self.headers
+            )
         else:
-            raise ValueError()
+            raise ValueError
 
         if response.status_code == 200:
             return response.json()
         else:
-            logging.error(
+            logger.error(
                 "Error while making %s request to %s: %s (error code %s)",
                 method,
                 endpoint,
                 response.json(),
-                response.status.code,
+                response.status_code,
             )
             return None
 
     def get_contracts(self):
-        exchange_info = self.make_requests("GET", "/fapi/v1/exchangeInfo", None)
+        exchange_info = self.make_request("GET", "/fapi/v1/exchangeInfo", None)
         contracts = dict()
 
         if exchange_info is not None:
@@ -46,7 +81,7 @@ class BinanceFuturesClient:
         data["interval"] = interval
         data["limit"] = 1000
 
-        raw_candles = self.make_requests("GET", "/fapi/v1/klines", data)
+        raw_candles = self.make_request("GET", "/fapi/v1/klines", data)
         candles = []
 
         if raw_candles is not None:
@@ -66,8 +101,8 @@ class BinanceFuturesClient:
 
     def get_bid_ask(self, symbol):
         data = dict()
-        data['symbol'] = symbol
-        ob_data = self.make_requests("GET", "/fapi/v1/ticker/bookTicker", data)
+        data["symbol"] = symbol
+        ob_data = self.make_request("GET", "/fapi/v1/ticker/bookTicker", data)
 
         if ob_data is not None:
             if symbol not in self.prices:
@@ -79,3 +114,107 @@ class BinanceFuturesClient:
                 self.prices[symbol]["bid"] = float(ob_data["bidPrice"])
                 self.prices[symbol]["ask"] = float(ob_data["askPrice"])
         return self.prices[symbol]
+
+    # Private endpoinss
+    def get_balances(self):
+        data = dict()
+        data["timestamp"] = int(time.time() * 1000)
+        data["signature"] = self.generate_signature(data)
+        balances = dict()
+        account_data = self.make_request("GET", "/fapi/v1/account", data)
+
+        if account_data is not None:
+            for a in account_data["assets"]:
+                balances[a["asset"]] = a
+        return balances
+
+    def place_order(self, symbol, side, quantity, order_type, price=None, tif=None):
+        data = dict()
+        data["symbol"] = symbol
+        data["side"] = side
+        data["quantity"] = quantity
+        data["type"] = order_type
+
+        if price is not None:
+            data["price"] = price
+
+        if tif is not None:
+            data["timeInForce"] = tif
+
+        data["timestamp"] = int(time.time() * 1000)
+        data["signature"] = self.generate_signature(data)
+
+        order_status = self.make_request("POST", "/fapi/v1/order", data)
+
+        return order_status
+
+    def cancel_order(self, symbol, order_id):
+        data = dict()
+        data["orderId"] = order_id
+        data["symbol"] = symbol
+
+        data["timestamp"] = int(time.time() * 1000)
+        data["signature"] = self.generate_signature(data)
+
+        order_status = self.make_request("DELETE", "/fapi/v1/order", data)
+
+        return order_status
+
+    def get_order_status(self, symbol, order_id):
+        data = dict()
+        data["timestamp"] = int(time.time() * 1000)
+        data["symbol"] = symbol
+        data["orderId"] = order_id
+        data["signature"] = self.generate_signature(data)
+
+        order_status = self.make_request("GET", "/fapi/v1/order", data)
+
+        return order_status
+
+    def start_ws(self):
+        self.ws = websocket.WebSocketApp(
+            self.wss_url,
+            on_open=self.on_open,
+            on_close=self.on_close,
+            on_error=self.on_error,
+            on_message=self.on_message,
+        )
+        self.ws.run_forever()
+
+    def on_open(self, ws):
+        logger.info("Binance connection opened")
+
+    def on_close(self, ws):
+        logger.warning("Binance Websocket connection closed")
+
+    def on_error(self, ws, msg):
+        logger.error("Binance connection error: %s", msg)
+
+    def on_message(self, ws, msg):
+        data = json.loads(msg)
+
+        if "e" in data:
+            if data["e"] == "bookTicker":
+                symbol = data["s"]
+
+                if symbol not in self.prices:
+                    self.prices[symbol] = {
+                        "bid": float(data["b"]),
+                        "ask": float(data["a"]),
+                    }
+                else:
+                    self.prices[symbol]["bid"] = float(data["b"])
+                    self.prices[symbol]["ask"] = float(data["a"])
+
+                print(self.prices[symbol])
+
+    def subscribe_channel(self, symbol):
+        data = dict()
+        data["method"] = "SUBSCRIBE"
+        data["params"] = []
+        data["params"].append(symbol.lower() + "@bookTicker")
+        data["id"] = self.id
+
+        self.ws.send(json.dumps(data))
+
+        self.id += 1

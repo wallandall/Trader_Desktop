@@ -28,11 +28,8 @@ logger.addHandler(file_handler)
 
 
 if __name__ == '__main__':
-
-    binance = BinanceFuturesClient(True)
-    #print(binance.get_contracts())
-    #print(binance.get_bid_ask("BTCUSDT"))
-    print(binance.get_historical_candles("BTCUSDT", "1h"))
+    binance = BinanceFuturesClient(KEY, SECRET, True)
+   
     root = tk.Tk()
     
 
